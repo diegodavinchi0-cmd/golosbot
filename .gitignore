@@ -1,0 +1,7 @@
+config.py
+string_session.txt
+*.session
+*.session-journal
+.venv/
+*.log
+__pycache__/
