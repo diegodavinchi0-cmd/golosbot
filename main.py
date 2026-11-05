@@ -29,7 +29,7 @@ client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # Sozlamalar:
 current_status = "RestoFlow loyihasi va yangi AI integratsiyalari ustida ishlayapman."
-voice_enabled = False  # Odatiy holatda o'chiq (faqat /voice on qilinganda yoqiladi)
+voice_enabled = False  # Odatiy holatda o'chiq
 
 
 def ovozni_matnga(path):
@@ -41,26 +41,32 @@ def ovozni_matnga(path):
     return r.text.strip()
 
 
-def ai_javob(savol: str, sender_name: str, is_me: bool) -> str:
+def ai_javob(savol: str, sender_name: str, sender_username: str, sender_id: int) -> str:
     global current_status
+    
+    # Maxsus shaxs eslatmasi (Hadichaxon)
+    special_rule = ""
+    if (sender_username and sender_username.lower() == "soim_h") or sender_id == 7795903945:
+        special_rule = "JUDA MUHIM: Bu qizning ismi Hadichaxon. Unga hurmat va samimiyat bilan faqat 'Hadichaxon' deb murojaat qil. Hech qanday boshqa nik yoki taxallus ishlatma!"
+
     system_prompt = f"""Sen Diego (Zulfiqor)ning shaxsiy sun'iy intellekt yordamchisisan (Diego AI).
 Sen juda aqlli, ziyrak, zamonaviy va jonli gapiradigan shaxssan.
 
-DIEGO HAQIDA MA'LUMOTLAR:
+DIEGO HAQIDA:
 - Ismi: Zulfiqor (Telegram: @Diego_Davinchi, Nickname: Diego)
 - Hozirgi bandligi / statusi: {current_status}
 
+{special_rule}
+
 MUHIM QOIDALAR:
-1. O'zbek tilidagi gaplarni juda nozik tushun:
+1. O'zbek tilidagi so'zlashuvni nozik tushun:
    - "Qanday aisan?" yoki "qanaqa aisan?" bu "qanday sun'iy intellektsan / vazifang nima?" degani ("qandaysan" bilan adashtirma!).
    - Javob: "Men Diegoning shaxsiy AI yordamchisiman 🤖. U band bo'lganida savollarga javob berib turaman." deb tushuntir.
-2. Qisqa, lo'nda va tabiiy javob ber (1-3 gap). Kitobiy qotib qolgan tilda emas, xuddi odamdek erkin gapir.
-3. Suhbatdoshning Telegramdagi nikini har safar qaytarib aytib robotlik qilma.
-4. Agar "Diego qayerda?", "nima qilyapti?" deb so'ralsa, uning hozirgi statusiga asoslanib javob ber.
-5. Agar "Diegoni chaqir", "shoshilinch" desa, "Xo'p, hozir uning o'ziga xabar yuboraman!" deb ayt.
+2. Qisqa, lo'nda va tabiiy javob ber (1-3 gap). Kitobiy qotib qolgan tilda emas, jonli odamdek gapir.
+3. Suhbatdoshning Telegramdagi nikini robotdek qaytarma.
+4. Agar "Diego qayerda?", "nima qilyapti?" deb so'ralsa, uning hozirgi statusiga qarab javob ber.
+5. Agar "Diegoni chaqir", "shoshilinch" desa, "Xo'p, hozir uning o'ziga signal yuboraman!" deb ayt.
 """
-    if is_me:
-        system_prompt += "\nHozir senga yozayotgan odam — Diego (Zulfiqor)ning o'zi! Unga xo'jayindek samimiy muomala qil."
 
     try:
         resp = groq.chat.completions.create(
@@ -77,8 +83,36 @@ MUHIM QOIDALAR:
         return "Kechirasiz, hozir serverda nosozlik bo'ldi. Birozdan so'ng qayta yozing."
 
 
+# 1. "Избранное" (Saqlangan xabarlar) chatidan kelgan har qanday buyruqni tutish
+@client.on(events.NewMessage(chats="me"))
+async def me_commands_handler(event):
+    global current_status, voice_enabled
+    m = event.message
+    if not m.text:
+        return
+
+    cmd = m.text.strip().lower()
+    if cmd == "/voice on":
+        voice_enabled = True
+        await m.reply("🎙 **Goloslarni matnga o'girish YOQILDI!**\nEndi kelgan ovozli xabarlar avtomatik matnga aylanadi.")
+        print("⚙️ Goloslar YOQILDI")
+    elif cmd == "/voice off":
+        voice_enabled = False
+        await m.reply("⏸ **Goloslarni matnga o'girish O'CHIRILDI!**\nOvozli xabarlar avtomatik o'girilmaydi.")
+        print("⚙️ Goloslar O'CHIRILDI")
+    elif cmd.startswith("/status"):
+        new_status = m.text.replace("/status", "").strip()
+        if new_status:
+            current_status = new_status
+            await m.reply(f"✅ **Status yangilandi:**\n_{current_status}_")
+        else:
+            v_state = "YOQILGAN" if voice_enabled else "O'CHIRILGAN"
+            await m.reply(f"📍 **Hozirgi status:**\n_{current_status}_\n🎙 Goloslar: **{v_state}**\n\nBoshqarish:\n• `/voice on` yoki `/voice off`\n• `/status [yangi status]`")
+
+
+# 2. Boshqa foydalanuvchilardan kelgan xabarlarga javob berish
 @client.on(events.NewMessage(incoming=True))
-async def message_handler(event):
+async def incoming_handler(event):
     global current_status, voice_enabled
     m = event.message
     sender = await event.get_sender()
@@ -86,37 +120,19 @@ async def message_handler(event):
         return
 
     me = await client.get_me()
+    if sender and sender.id == me.id:
+        return
+
     sender_name = get_display_name(sender) if sender else "Do'stim"
-    is_me = (sender and sender.id == me.id)
+    sender_username = getattr(sender, "username", "") or ""
+    sender_id = getattr(sender, "id", 0)
 
-    # 0. Diego o'zining "Saqlangan xabarlar"idan boshqarishi:
-    if is_me and m.text:
-        cmd = m.text.strip().lower()
-        if cmd == "/voice on":
-            voice_enabled = True
-            await m.reply("🎙 **Goloslarni matnga o'girish YOQILDI!**\nEndi kelgan ovozli xabarlar avtomatik matnga aylanadi.")
-            return
-        elif cmd == "/voice off":
-            voice_enabled = False
-            await m.reply("⏸ **Goloslarni matnga o'girish O'CHIRILDI!**\nOvozli xabarlar avtomatik o'girilmaydi.")
-            return
-        elif cmd.startswith("/status"):
-            new_status = m.text.replace("/status", "").strip()
-            if new_status:
-                current_status = new_status
-                await m.reply(f"✅ **Status yangilandi:**\n_{current_status}_")
-                return
-            else:
-                v_state = "YOQILGAN" if voice_enabled else "O'CHIRILGAN"
-                await m.reply(f"📍 **Hozirgi status:**\n_{current_status}_\n🎙 Goloslar: **{v_state}**\n\nBoshqarish:\n• `/voice on` yoki `/voice off`\n• `/status [yangi status]`")
-                return
-
-    # 1. @diegohelp orqali murojaat
+    # A. @diegohelp orqali murojaat
     if m.text and "@diegohelp" in m.text.lower():
         text_clean = m.text.replace("@diegohelp", "").replace("@Diegohelp", "").strip()
         print(f"📩 @diegohelp chaqirildi ({sender_name}): {text_clean}")
         
-        # Agar biror golosga reply qilib @diegohelp deb yozilgan bo'lsa - o'sha golosni matnga o'girib beradi!
+        # Agar biror golosga reply qilib @diegohelp deb yozilgan bo'lsa
         if m.is_reply:
             reply_msg = await m.get_reply_message()
             if reply_msg and (reply_msg.voice or reply_msg.video_note):
@@ -130,26 +146,26 @@ async def message_handler(event):
                     print("❌ Reply golos xato:", e)
 
         if not text_clean:
-            await m.reply(f"🤖 **Diego AI:** Salom! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
+            await m.reply("🤖 **Diego AI:** Salom! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
             return
 
-        javob = await asyncio.to_thread(ai_javob, text_clean, sender_name, is_me)
+        javob = await asyncio.to_thread(ai_javob, text_clean, sender_name, sender_username, sender_id)
         await m.reply(f"🤖 **Diego AI:**\n\n{javob}")
 
-        # Shoshilinch chaqiriq bo'lsa, Diegoga xabar berish
+        # Shoshilinch chaqiriq bo'lsa, Diegoning "Избранное"siga xabar berish
         urgent_keywords = ["chaqir", "shoshilinch", "срочно", "позови", "urgent", "call"]
-        if any(w in text_clean.lower() for w in urgent_keywords) and not is_me:
+        if any(w in text_clean.lower() for w in urgent_keywords):
             chat_title = event.chat.title if event.is_group else sender_name
             notify_text = (
                 f"🚨 **SHOSHILINCH BILDIRISHNOMA!**\n\n"
-                f"👤 **Kimdan:** {sender_name} (@{getattr(sender, 'username', 'yoq')})\n"
+                f"👤 **Kimdan:** {sender_name} (@{sender_username})\n"
                 f"💬 **Qayerda:** {chat_title}\n"
                 f"📝 **Xabar:** {text_clean}"
             )
             await client.send_message("me", notify_text)
         return
 
-    # 2. Golos va dumaloq video (krujok) - faqat voice_enabled=True bo'lgandagina ishlaydi
+    # B. Golos va dumaloq video (krujok) - faqat voice_enabled=True bo'lganda
     if (m.voice or m.video_note) and event.is_private and voice_enabled:
         dur = int(getattr(m.file, "duration", 0) or 0)
         if dur > MAX_SECONDS:
