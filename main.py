@@ -27,8 +27,9 @@ MAX_SECONDS = int(os.getenv("MAX_SECONDS", "600"))
 groq = Groq(api_key=GROQ_KEY)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# Serverdagi dinamik xotira (status)
+# Sozlamalar:
 current_status = "RestoFlow loyihasi va yangi AI integratsiyalari ustida ishlayapman."
+voice_enabled = False  # Odatiy holatda o'chiq (faqat /voice on qilinganda yoqiladi)
 
 
 def ovozni_matnga(path):
@@ -42,28 +43,33 @@ def ovozni_matnga(path):
 
 def ai_javob(savol: str, sender_name: str, is_me: bool) -> str:
     global current_status
-    system_prompt = (
-        "Sen Diego'ning (Zulfiqor) shaxsiy sun'iy intellekt yordamchisisan (Diego AI).\n"
-        f"DIEGO'NING HOZIRGI STATUSI: {current_status}\n\n"
-        "QOIDALAR:\n"
-        "1. Foydalanuvchi qaysi tilda yozsa, o'sha tilda qisqa, aniq va juda xushmuomala javob ber.\n"
-        "2. Agar 'Diego nima qilyapti?', 'qayerda?' kabi savollar berilsa, yuqoridagi 'Hozirgi Status' asosida javob ber.\n"
-        "3. Agar 'Diegoni chaqir', 'shoshilinch' desa: 'Xo'p, Diegoga hozir bildirishnoma yubordim!' deb ayt.\n"
-        f"4. Suhbatdosh ismi: {sender_name}.\n"
-    )
+    system_prompt = f"""Sen Diego (Zulfiqor)ning shaxsiy sun'iy intellekt yordamchisisan (Diego AI).
+Sen juda aqlli, ziyrak, zamonaviy va jonli gapiradigan shaxssan.
+
+DIEGO HAQIDA MA'LUMOTLAR:
+- Ismi: Zulfiqor (Telegram: @Diego_Davinchi, Nickname: Diego)
+- Hozirgi bandligi / statusi: {current_status}
+
+MUHIM QOIDALAR:
+1. O'zbek tilidagi gaplarni juda nozik tushun:
+   - "Qanday aisan?" yoki "qanaqa aisan?" bu "qanday sun'iy intellektsan / vazifang nima?" degani ("qandaysan" bilan adashtirma!).
+   - Javob: "Men Diegoning shaxsiy AI yordamchisiman 🤖. U band bo'lganida savollarga javob berib turaman." deb tushuntir.
+2. Qisqa, lo'nda va tabiiy javob ber (1-3 gap). Kitobiy qotib qolgan tilda emas, xuddi odamdek erkin gapir.
+3. Suhbatdoshning Telegramdagi nikini har safar qaytarib aytib robotlik qilma.
+4. Agar "Diego qayerda?", "nima qilyapti?" deb so'ralsa, uning hozirgi statusiga asoslanib javob ber.
+5. Agar "Diegoni chaqir", "shoshilinch" desa, "Xo'p, hozir uning o'ziga xabar yuboraman!" deb ayt.
+"""
     if is_me:
-        system_prompt += "Hozir senga yozayotgan odam — Diego (Zulfiqor)ning o'zi! Unga xo'jayindek samimiy muomala qil."
-    else:
-        system_prompt += "Hozir senga boshqa odam yozmoqda. Diego nomidan madaniyatli javob ber."
+        system_prompt += "\nHozir senga yozayotgan odam — Diego (Zulfiqor)ning o'zi! Unga xo'jayindek samimiy muomala qil."
 
     try:
         resp = groq.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="qwen/qwen3.8-27b",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": savol},
             ],
-            max_tokens=400,
+            max_tokens=250,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
@@ -73,7 +79,7 @@ def ai_javob(savol: str, sender_name: str, is_me: bool) -> str:
 
 @client.on(events.NewMessage(incoming=True))
 async def message_handler(event):
-    global current_status
+    global current_status, voice_enabled
     m = event.message
     sender = await event.get_sender()
     if getattr(sender, "bot", False):
@@ -83,29 +89,54 @@ async def message_handler(event):
     sender_name = get_display_name(sender) if sender else "Do'stim"
     is_me = (sender and sender.id == me.id)
 
-    # 0. Diego o'zining "Saqlangan xabarlar"idan statusni yangilashi mumkin (/status ...)
-    if is_me and m.text and m.text.startswith("/status"):
-        new_status = m.text.replace("/status", "").strip()
-        if new_status:
-            current_status = new_status
-            await m.reply(f"✅ **Status yangilandi:**\n_{current_status}_")
+    # 0. Diego o'zining "Saqlangan xabarlar"idan boshqarishi:
+    if is_me and m.text:
+        cmd = m.text.strip().lower()
+        if cmd == "/voice on":
+            voice_enabled = True
+            await m.reply("🎙 **Goloslarni matnga o'girish YOQILDI!**\nEndi kelgan ovozli xabarlar avtomatik matnga aylanadi.")
             return
-        else:
-            await m.reply(f"📍 **Hozirgi status:**\n_{current_status}_\n\nYangilash uchun: `/status [yangi matn]` deb yozing.")
+        elif cmd == "/voice off":
+            voice_enabled = False
+            await m.reply("⏸ **Goloslarni matnga o'girish O'CHIRILDI!**\nOvozli xabarlar avtomatik o'girilmaydi.")
             return
+        elif cmd.startswith("/status"):
+            new_status = m.text.replace("/status", "").strip()
+            if new_status:
+                current_status = new_status
+                await m.reply(f"✅ **Status yangilandi:**\n_{current_status}_")
+                return
+            else:
+                v_state = "YOQILGAN" if voice_enabled else "O'CHIRILGAN"
+                await m.reply(f"📍 **Hozirgi status:**\n_{current_status}_\n🎙 Goloslar: **{v_state}**\n\nBoshqarish:\n• `/voice on` yoki `/voice off`\n• `/status [yangi status]`")
+                return
 
     # 1. @diegohelp orqali murojaat
     if m.text and "@diegohelp" in m.text.lower():
         text_clean = m.text.replace("@diegohelp", "").replace("@Diegohelp", "").strip()
         print(f"📩 @diegohelp chaqirildi ({sender_name}): {text_clean}")
         
+        # Agar biror golosga reply qilib @diegohelp deb yozilgan bo'lsa - o'sha golosni matnga o'girib beradi!
+        if m.is_reply:
+            reply_msg = await m.get_reply_message()
+            if reply_msg and (reply_msg.voice or reply_msg.video_note):
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        path = await reply_msg.download_media(file=os.path.join(tmp, "a.ogg"))
+                        matn = await asyncio.to_thread(ovozni_matnga, path)
+                    await m.reply(f"🎙 **Ovozli xabar matni:**\n\n_{matn}_")
+                    return
+                except Exception as e:
+                    print("❌ Reply golos xato:", e)
+
         if not text_clean:
-            await m.reply(f"🤖 **Diego AI:** Salom {sender_name}! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
+            await m.reply(f"🤖 **Diego AI:** Salom! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
             return
 
         javob = await asyncio.to_thread(ai_javob, text_clean, sender_name, is_me)
         await m.reply(f"🤖 **Diego AI:**\n\n{javob}")
 
+        # Shoshilinch chaqiriq bo'lsa, Diegoga xabar berish
         urgent_keywords = ["chaqir", "shoshilinch", "срочно", "позови", "urgent", "call"]
         if any(w in text_clean.lower() for w in urgent_keywords) and not is_me:
             chat_title = event.chat.title if event.is_group else sender_name
@@ -118,8 +149,8 @@ async def message_handler(event):
             await client.send_message("me", notify_text)
         return
 
-    # 2. Golos va dumaloq video (krujok) - shaxsiy chatlarda
-    if (m.voice or m.video_note) and event.is_private:
+    # 2. Golos va dumaloq video (krujok) - faqat voice_enabled=True bo'lgandagina ishlaydi
+    if (m.voice or m.video_note) and event.is_private and voice_enabled:
         dur = int(getattr(m.file, "duration", 0) or 0)
         if dur > MAX_SECONDS:
             return
