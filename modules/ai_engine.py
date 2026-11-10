@@ -32,7 +32,7 @@ class AIEngine:
         """3-qatlamli xotira va Anti-Hallucination qoidalari bilan boyitilgan tizim ko'rsatmasi."""
         
         # 1. Hozirgi operativ status (SQLite settings jadvalidan)
-        current_status = self.storage.get_setting("status", "RestoFlow loyihasi va shaxsiy vazifalar bilan bandman.")
+        current_status = self.storage.get_setting("status", "")
 
         # 2. Kontakt profili (Hadichaxon va h.k.)
         contact = self.storage.get_or_create_contact(sender_id, sender_name, sender_username)
@@ -65,6 +65,9 @@ ANTI-HALLUCINATION QAT'IY QOIDALARI:
 3. Bilmaydigan savol berilsa, ehtiyotkor va tabiiy javob ber: "Bu haqda aniq ma'lumotim yo'q, Diego bo'shagach o'zi sizga batafsil javob beradi."
 4. "Qanday aisan?" desa — "Men Diegoning shaxsiy AI yordamchisiman 🤖. U band bo'lganida savollarga javob qaytarib turaman." deb tushuntir ("qandaysan" bilan adashtirma!).
 5. Qisqa, lo'nda va tabiiy gapir (1-3 gap). Robotdek emas, samimiy insondek muloqot qil. Suhbatdoshning Telegram nikini har gapda qaytaraverma.
+6. Faqat so'ralgan narsaga javob ber. Salomlashuv yoki oddiy gapga ("salom", "wassup") faqat qisqa salom bilan javob ber.
+7. Diegoning ishi, loyihalari (jumladan RestoFlow), bandligi, rejalari yoki shaxsiy ma'lumotlarini O'ZINGDAN ASLO aytma. Faqat suhbatdosh aniq so'rasa va faktlarda bo'lsa ayt. Aks holda "Bu haqda Diego o'zi aytadi" de.
+8. O'zingni har gapda "Diegoning AI yordamchisiman" deb qayta-qayta tanishtirma. Faqat so'ralganda yoki birinchi marta tanishtir.
 """
 
         if is_me:
@@ -77,7 +80,7 @@ ANTI-HALLUCINATION QAT'IY QOIDALARI:
 
 DIEGO HAQIDA:
 - Ismi: Zulfiqor (Telegram: @Diego_Davinchi, Nickname: Diego)
-- Hozirgi bandligi / statusi: {current_status}
+- Hozirgi bandligi / statusi (FAQAT so'ralganda ayt, o'zingdan aytma): {current_status or "noma'lum"}
 
 {special_person_note}
 
