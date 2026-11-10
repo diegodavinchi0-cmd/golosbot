@@ -5,7 +5,9 @@ Layer 2: Episode Summary
 Layer 3: Long-term Semantic Facts (FTS5 SQLite)
 """
 
+import os
 import logging
+import httpx
 from typing import List, Dict, Any, Optional
 from groq import Groq
 from modules.storage import StorageManager
@@ -17,8 +19,11 @@ logger.setLevel(logging.INFO)
 class AIEngine:
     """Diego AI muloqot va fikrlash dvigateli."""
 
-    def __init__(self, groq_key: str, storage: StorageManager, model: str = "qwen/qwen3.8-27b"):
+    def __init__(self, groq_key: str, storage: StorageManager, model: str = "qwen/qwen3.8-27b",
+                 gemini_key: str = ""):
         self.groq = Groq(api_key=groq_key)
+        self.gemini_key = gemini_key or os.getenv("GEMINI_KEY", "")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.storage = storage
         self.model = model
 
@@ -101,6 +106,12 @@ DIEGO HAQIDA:
         if not recent_messages or recent_messages[-1]["message_text"] != user_query:
             messages.append({"role": "user", "content": user_query})
 
+        # 1) Gemini (asosiy), 2) Groq (zaxira)
+        if self.gemini_key:
+            try:
+                return self._call_gemini(messages)
+            except Exception as e:
+                logger.warning("Gemini xatolik, Groq zaxirasiga o'tilmoqda: %s", e)
         try:
             resp = self.groq.chat.completions.create(
                 model=self.model,
@@ -113,3 +124,23 @@ DIEGO HAQIDA:
         except Exception as e:
             logger.error("AI javob yaratishda xatolik: %s", e)
             return "Kechirasiz, hozir serverda nosozlik bo'ldi. Birozdan so'ng qayta yozing."
+
+    def _call_gemini(self, messages: List[Dict[str, str]]) -> str:
+        """Gemini REST API (kalit header orqali yuboriladi, URL'da emas)."""
+        system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+        contents = [
+            {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+            for m in messages if m["role"] != "system"
+        ]
+        r = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent",
+            headers={"x-goog-api-key": self.gemini_key},
+            json={
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": contents,
+                "generationConfig": {"maxOutputTokens": 300, "temperature": 0.6},
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()

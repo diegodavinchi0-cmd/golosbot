@@ -2,3 +2,4 @@ telethon
 groq
 fastapi
 uvicorn
+httpx
