@@ -23,7 +23,7 @@ class AIEngine:
                  gemini_key: str = ""):
         self.groq = Groq(api_key=groq_key)
         self.gemini_key = gemini_key or os.getenv("GEMINI_KEY", "")
-        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.storage = storage
         self.model = model
 
