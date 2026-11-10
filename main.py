@@ -1,7 +1,20 @@
+"""
+Diego AI — Master Main Application (Unified, Modular, 24/7 Production-Ready).
+Integrates:
+- Fast API Web Server (Health Check & Render Keep-Alive)
+- Telethon Userbot Event Router
+- StorageManager (SQLite WAL + FTS5)
+- AIEngine (3-Layer Memory + Anti-Hallucination Guardrails)
+- MemoryManager (Obsidian Sync & Deduplication)
+- CommandHandler (/voice, /status, /remember, /forget, /brain, /sync)
+- Full preservation of @diegohelp, Hadichaxon rules, urgent notifications, and voice-to-text.
+"""
+
 import os
 import sys
 import tempfile
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
@@ -10,6 +23,7 @@ from telethon.sessions import StringSession
 from telethon.utils import get_display_name
 from groq import Groq
 
+# Encoding sozlash (Windows uchun)
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -17,6 +31,16 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("diego_main")
+
+# Modullarni import qilish
+from modules.storage import StorageManager
+from modules.memory_manager import MemoryManager
+from modules.ai_engine import AIEngine
+from modules.commands import CommandHandler
+
+# Konfiguratsiya va kalitlar
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 GROQ_KEY = os.getenv("GROQ_KEY", "")
@@ -24,15 +48,29 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 OUTPUT = os.getenv("OUTPUT", "chat")
 MAX_SECONDS = int(os.getenv("MAX_SECONDS", "600"))
 
+# Yadro komponentlarni ishga tushirish
+storage = StorageManager()
+memory_mgr = MemoryManager(storage)
+ai_engine = AIEngine(groq_key=GROQ_KEY, storage=storage, model="qwen/qwen3.8-27b")
+command_handler = CommandHandler(storage, memory_mgr)
+
+# Boshlang'ich Obsidian sinxronizatsiyasi
+memory_mgr.sync_from_obsidian()
+
+# Telethon client yaratish (StringSession bo'lsa shuni, bo'lmasa file-session ishlatadi)
+if SESSION_STRING:
+    logger.info("StringSession orqali ulanmoqda (Render / Cloud rejimi)...")
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    logger.info("File session orqali ulanmoqda (Lokal rejim)...")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    client = TelegramClient(os.path.join(BASE_DIR, "golosbot"), API_ID, API_HASH)
+
 groq = Groq(api_key=GROQ_KEY)
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-
-# Sozlamalar:
-current_status = "RestoFlow loyihasi va yangi AI integratsiyalari ustida ishlayapman."
-voice_enabled = False  # Odatiy holatda o'chiq
 
 
-def ovozni_matnga(path):
+def ovozni_matnga(path: str) -> str:
+    """Whisper orqali ovozli xabarni matnga o'girish."""
     with open(path, "rb") as f:
         r = groq.audio.transcriptions.create(
             file=("audio.ogg", f.read()),
@@ -41,79 +79,28 @@ def ovozni_matnga(path):
     return r.text.strip()
 
 
-def ai_javob(savol: str, sender_name: str, sender_username: str, sender_id: int) -> str:
-    global current_status
-    
-    # Maxsus shaxs eslatmasi (Hadichaxon)
-    special_rule = ""
-    if (sender_username and sender_username.lower() == "soim_h") or sender_id == 7795903945:
-        special_rule = "JUDA MUHIM: Bu qizning ismi Hadichaxon. Unga hurmat va samimiyat bilan faqat 'Hadichaxon' deb murojaat qil. Hech qanday boshqa nik yoki taxallus ishlatma!"
-
-    system_prompt = f"""Sen Diego (Zulfiqor)ning shaxsiy sun'iy intellekt yordamchisisan (Diego AI).
-Sen juda aqlli, ziyrak, zamonaviy va jonli gapiradigan shaxssan.
-
-DIEGO HAQIDA:
-- Ismi: Zulfiqor (Telegram: @Diego_Davinchi, Nickname: Diego)
-- Hozirgi bandligi / statusi: {current_status}
-
-{special_rule}
-
-MUHIM QOIDALAR:
-1. O'zbek tilidagi so'zlashuvni nozik tushun:
-   - "Qanday aisan?" yoki "qanaqa aisan?" bu "qanday sun'iy intellektsan / vazifang nima?" degani ("qandaysan" bilan adashtirma!).
-   - Javob: "Men Diegoning shaxsiy AI yordamchisiman 🤖. U band bo'lganida savollarga javob berib turaman." deb tushuntir.
-2. Qisqa, lo'nda va tabiiy javob ber (1-3 gap). Kitobiy qotib qolgan tilda emas, jonli odamdek gapir.
-3. Suhbatdoshning Telegramdagi nikini robotdek qaytarma.
-4. Agar "Diego qayerda?", "nima qilyapti?" deb so'ralsa, uning hozirgi statusiga qarab javob ber.
-5. Agar "Diegoni chaqir", "shoshilinch" desa, "Xo'p, hozir uning o'ziga signal yuboraman!" deb ayt.
-"""
-
-    try:
-        resp = groq.chat.completions.create(
-            model="qwen/qwen3.8-27b",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": savol},
-            ],
-            max_tokens=250,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        print("❌ AI xatolik:", e)
-        return "Kechirasiz, hozir serverda nosozlik bo'ldi. Birozdan so'ng qayta yozing."
-
-
-# 1. "Избранное" (Saqlangan xabarlar) chatidan kelgan har qanday buyruqni tutish
+# ==========================================
+# 1. "Избранное" (Saqlangan xabarlar) BUYRUQLARI
+# ==========================================
 @client.on(events.NewMessage(chats="me"))
-async def me_commands_handler(event):
-    global current_status, voice_enabled
+async def me_commands_router(event):
     m = event.message
     if not m.text:
         return
 
-    cmd = m.text.strip().lower()
-    if cmd == "/voice on":
-        voice_enabled = True
-        await m.reply("🎙 **Goloslarni matnga o'girish YOQILDI!**\nEndi kelgan ovozli xabarlar avtomatik matnga aylanadi.")
-        print("⚙️ Goloslar YOQILDI")
-    elif cmd == "/voice off":
-        voice_enabled = False
-        await m.reply("⏸ **Goloslarni matnga o'girish O'CHIRILDI!**\nOvozli xabarlar avtomatik o'girilmaydi.")
-        print("⚙️ Goloslar O'CHIRILDI")
-    elif cmd.startswith("/status"):
-        new_status = m.text.replace("/status", "").strip()
-        if new_status:
-            current_status = new_status
-            await m.reply(f"✅ **Status yangilandi:**\n_{current_status}_")
-        else:
-            v_state = "YOQILGAN" if voice_enabled else "O'CHIRILGAN"
-            await m.reply(f"📍 **Hozirgi status:**\n_{current_status}_\n🎙 Goloslar: **{v_state}**\n\nBoshqarish:\n• `/voice on` yoki `/voice off`\n• `/status [yangi status]`")
+    # Buyruq bo'lsa ishlov beramiz
+    if m.text.startswith("/"):
+        reply = command_handler.handle_command(m.text)
+        if reply:
+            await m.reply(reply)
+            logger.info("Buyruq bajarildi: %s", m.text)
 
 
-# 2. Boshqa foydalanuvchilardan kelgan xabarlarga javob berish
+# ==========================================
+# 2. KIRUVCHI XABARLAR (Guruhlar va Shaxsiy chatlar)
+# ==========================================
 @client.on(events.NewMessage(incoming=True))
-async def incoming_handler(event):
-    global current_status, voice_enabled
+async def incoming_messages_router(event):
     m = event.message
     sender = await event.get_sender()
     if getattr(sender, "bot", False):
@@ -126,13 +113,27 @@ async def incoming_handler(event):
     sender_name = get_display_name(sender) if sender else "Do'stim"
     sender_username = getattr(sender, "username", "") or ""
     sender_id = getattr(sender, "id", 0)
+    chat_id = event.chat_id
+    chat_title = getattr(event.chat, "title", "") or sender_name
 
-    # A. @diegohelp orqali murojaat
+    # Xabarni L1 xotiraga (SQLite) yozib qo'yish
+    if m.text:
+        storage.add_message(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            chat_title=chat_title,
+            message_text=m.text,
+            is_from_me=False
+        )
+
+    # --- A. @diegohelp TRIGGERS (AI Javob berishi) ---
     if m.text and "@diegohelp" in m.text.lower():
         text_clean = m.text.replace("@diegohelp", "").replace("@Diegohelp", "").strip()
-        print(f"📩 @diegohelp chaqirildi ({sender_name}): {text_clean}")
-        
-        # Agar biror golosga reply qilib @diegohelp deb yozilgan bo'lsa
+        logger.info("@diegohelp chaqirildi (%s): %s", sender_name, text_clean)
+
+        # Agar biror golosga reply qilib @diegohelp yozilgan bo'lsa
         if m.is_reply:
             reply_msg = await m.get_reply_message()
             if reply_msg and (reply_msg.voice or reply_msg.video_note):
@@ -143,19 +144,34 @@ async def incoming_handler(event):
                     await m.reply(f"🎙 **Ovozli xabar matni:**\n\n_{matn}_")
                     return
                 except Exception as e:
-                    print("❌ Reply golos xato:", e)
+                    logger.error("Reply golos xatosi: %s", e)
 
         if not text_clean:
-            await m.reply("🤖 **Diego AI:** Salom! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
+            # Hadichaxon tekshiruvi
+            greeting = "Hadichaxon" if (sender_username.lower() == "soim_h" or sender_id == 7795903945) else sender_name
+            await m.reply(f"🤖 **Diego AI:** Salom {greeting}! Men Diegoning shaxsiy yordamchisiman. Sizga qanday yordam bera olaman?")
             return
 
-        javob = await asyncio.to_thread(ai_javob, text_clean, sender_name, sender_username, sender_id)
+        # AI Engine orqali 3-qatlamli kontekst asosida javob olish
+        javob = await asyncio.to_thread(
+            ai_engine.generate_response,
+            chat_id, sender_id, sender_name, sender_username, text_clean, False
+        )
         await m.reply(f"🤖 **Diego AI:**\n\n{javob}")
 
-        # Shoshilinch chaqiriq bo'lsa, Diegoning "Избранное"siga xabar berish
+        # AI javobini ham suhbatlar tarixiga qo'shish (L1 Context)
+        storage.add_message(
+            chat_id=chat_id,
+            sender_id=me.id,
+            sender_name="Diego AI",
+            chat_title=chat_title,
+            message_text=javob,
+            is_from_me=True
+        )
+
+        # Shoshilinch bildirishnoma ("Diegoni chaqir", "shoshilinch")
         urgent_keywords = ["chaqir", "shoshilinch", "срочно", "позови", "urgent", "call"]
         if any(w in text_clean.lower() for w in urgent_keywords):
-            chat_title = event.chat.title if event.is_group else sender_name
             notify_text = (
                 f"🚨 **SHOSHILINCH BILDIRISHNOMA!**\n\n"
                 f"👤 **Kimdan:** {sender_name} (@{sender_username})\n"
@@ -163,10 +179,12 @@ async def incoming_handler(event):
                 f"📝 **Xabar:** {text_clean}"
             )
             await client.send_message("me", notify_text)
+            logger.info("Shoshilinch bildirishnoma Diegoga yuborildi.")
         return
 
-    # B. Golos va dumaloq video (krujok) - faqat voice_enabled=True bo'lganda
-    if (m.voice or m.video_note) and event.is_private and voice_enabled:
+    # --- B. OVOZLI XABARLAR (Faqat voice_enabled=true bo'lganda) ---
+    voice_state = storage.get_setting("voice_enabled", "false")
+    if (m.voice or m.video_note) and event.is_private and (voice_state == "true"):
         dur = int(getattr(m.file, "duration", 0) or 0)
         if dur > MAX_SECONDS:
             return
@@ -176,7 +194,7 @@ async def incoming_handler(event):
                 path = await m.download_media(file=os.path.join(tmp, "a.ogg"))
                 matn = await asyncio.to_thread(ovozni_matnga, path)
         except Exception as e:
-            print("❌ Golos xato:", e)
+            logger.error("Golos transkripsiyasida xatolik: %s", e)
             return
 
         if not matn:
@@ -189,13 +207,17 @@ async def incoming_handler(event):
             await client.send_message("me", f"🎙 **{sender_name}** · {dur}s\n\n{matn}")
 
 
+# ==========================================
+# 3. FASTAPI SERVER LIFESPAN (Render 24/7)
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Telethon bot (Render 24/7) ishga tushmoqda...")
+    logger.info("Diego AI Core ishga tushmoqda...")
     await client.start()
-    print("Telethon bot muvaffaqiyatli ulandi!")
+    me = await client.get_me()
+    logger.info("Telegram muvaffaqiyatli ulandi: %s (@%s)", me.first_name, me.username)
     yield
-    print("Telethon bot to'xtatilmoqda...")
+    logger.info("Diego AI Core to'xtatilmoqda...")
     await client.disconnect()
 
 
@@ -203,8 +225,15 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
-def home():
-    return {"status": "ok", "message": "Diego AI 24/7 ishlab turibdi"}
+def health_check():
+    curr_status = storage.get_setting("status", "Active")
+    v_state = storage.get_setting("voice_enabled", "false")
+    return {
+        "status": "ok",
+        "service": "Diego AI 24/7 Master",
+        "current_status": curr_status,
+        "voice_transcription": "enabled" if v_state == "true" else "disabled"
+    }
 
 
 if __name__ == "__main__":
