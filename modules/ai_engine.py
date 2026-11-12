@@ -117,8 +117,33 @@ DIEGO HAQIDA:
                     logger.warning("Qoida fayli o'qilmadi (%s): %s", name, e)
         return ("FOYDALANUVCHI (DIEGO) QOIDALARI — ENG MUHIM, ularga qat'iy amal qil:\n" + "\n\n".join(parts)) if parts else ""
 
-    def generate_response(self, chat_id: int, sender_id: int, sender_name: str, 
+    def generate_response(self, chat_id: int, sender_id: int, sender_name: str,
                           sender_username: str, user_query: str, is_me: bool = False) -> str:
+        """Javob olib, so'ralmagan bo'lsa RestoFlow/bandlik haqidagi gaplarni qat'iy olib tashlaydi."""
+        answer = self._generate_raw(chat_id, sender_id, sender_name, sender_username, user_query, is_me)
+        if is_me:
+            return answer
+        return self._strip_unasked(answer, user_query)
+
+    @staticmethod
+    def _strip_unasked(answer: str, user_query: str) -> str:
+        import re
+        q = (user_query or "").lower()
+        banned = []
+        if "restoflow" not in q:
+            banned.append("restoflow")
+        if not any(k in q for k in ("band", "nima qil", "nima bilan", "qayerda", "ishlay", "hozir", "занят", "doing", "busy")):
+            banned += ["loyihasi ustida", "ustida ishlay", "kompyuterda", "ustida band"]
+        if not banned:
+            return answer
+        parts = re.split(r"(?<=[.!?])\s+", answer.strip())
+        kept = [p for p in parts if not any(b in p.lower() for b in banned)]
+        if kept == parts:
+            return answer
+        return " ".join(kept).strip() or "Qanday yordam bera olaman?"
+
+    def _generate_raw(self, chat_id: int, sender_id: int, sender_name: str,
+                      sender_username: str, user_query: str, is_me: bool = False) -> str:
         """3-qatlamli xotirani yig'ib Groq LLM orqali javob olish."""
         
         # Tizim ko'rsatmasi
@@ -130,6 +155,9 @@ DIEGO HAQIDA:
         messages = [{"role": "system", "content": system_prompt}]
         for msg in recent_messages:
             role = "assistant" if msg["is_from_me"] else "user"
+            # Oldingi AI javoblarida RestoFlow/bandlik gapi bo'lsa, model uni qayta takrorlamasligi uchun tushirib qoldiramiz
+            if role == "assistant" and "restoflow" in msg["message_text"].lower() and "restoflow" not in (user_query or "").lower():
+                continue
             messages.append({"role": role, "content": msg["message_text"]})
             
         # Joriy xabarni qo'shish (agar tarixda hali bo'lmasa)
