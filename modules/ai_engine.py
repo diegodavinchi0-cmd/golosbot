@@ -184,6 +184,21 @@ DIEGO HAQIDA:
             return "Kechirasiz, hozir serverda nosozlik bo'ldi. Birozdan so'ng qayta yozing."
 
     def _call_gemini(self, messages: List[Dict[str, str]]) -> str:
+        """Gemini REST API. Model 404 bersa, mavjud modelni o'zi topib almashtiradi."""
+        try:
+            return self._gemini_request(self.gemini_model, messages)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+            alt = self._discover_gemini_model(exclude=self.gemini_model)
+            if not alt:
+                raise
+            text = self._gemini_request(alt, messages)
+            logger.info("Gemini modeli almashtirildi: %s -> %s", self.gemini_model, alt)
+            self.gemini_model = alt
+            return text
+
+    def _gemini_request(self, model: str, messages: List[Dict[str, str]]) -> str:
         """Gemini REST API (kalit header orqali yuboriladi, URL'da emas)."""
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         contents = [
@@ -191,14 +206,46 @@ DIEGO HAQIDA:
             for m in messages if m["role"] != "system"
         ]
         r = httpx.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             headers={"x-goog-api-key": self.gemini_key},
             json={
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": contents,
-                "generationConfig": {"maxOutputTokens": 300, "temperature": 0.6},
+                # Pro/thinking modellar fikrlash uchun ham token sarflaydi, shuning uchun zaxira bilan
+                "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.6},
             },
+            timeout=30,
+        )
+        r.raise_for_status()
+        parts = r.json()["candidates"][0].get("content", {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts).strip()
+        if not text:
+            raise ValueError("Gemini bo'sh javob qaytardi")
+        return text
+
+    def _discover_gemini_model(self, exclude: str = "") -> str:
+        """ListModels orqali generateContent qo'llaydigan mavjud modelni tanlaydi."""
+        import re
+        r = httpx.get(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+            headers={"x-goog-api-key": self.gemini_key},
             timeout=20,
         )
         r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        names = [
+            m["name"].split("/", 1)[-1] for m in r.json().get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        ]
+        logger.info("Mavjud Gemini modellari: %s", ", ".join(names[:25]))
+        names = [n for n in names if n != exclude]
+
+        for pref in ("gemini-pro-latest", "gemini-flash-latest", "gemini-2.5-pro", "gemini-2.5-flash"):
+            if pref in names:
+                return pref
+
+        def ver(n: str):
+            m = re.match(r"gemini-(\d+(?:\.\d+)?)-(pro|flash)$", n)
+            return (float(m.group(1)), 1 if m.group(2) == "pro" else 0) if m else None
+
+        cands = [(ver(n), n) for n in names if ver(n)]
+        return max(cands)[1] if cands else ""
