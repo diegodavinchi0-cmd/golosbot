@@ -32,7 +32,12 @@ class AIEngine:
         """3-qatlamli xotira va Anti-Hallucination qoidalari bilan boyitilgan tizim ko'rsatmasi."""
         
         # 1. Hozirgi operativ status (SQLite settings jadvalidan)
-        current_status = self.storage.get_setting("status", "")
+        # Status FAQAT suhbatdosh bandlik/status haqida so'ragandagina promptga qo'shiladi.
+        q_low = (user_query or "").lower()
+        status_keys = ("band", "status", "nima qil", "nima bilan", "qayerda", "qachon", "bo'sh", "bosh",
+                       "ishlay", "hozir", "чем занят", "занят", "где", "what r y doing", "busy")
+        status_asked = any(k in q_low for k in status_keys)
+        current_status = self.storage.get_setting("status", "") if status_asked else ""
 
         # 2. Kontakt profili (Hadichaxon va h.k.)
         contact = self.storage.get_or_create_contact(sender_id, sender_name, sender_username)
@@ -54,13 +59,16 @@ class AIEngine:
         
         facts_text = ""
         all_facts = {f["id"]: f["fact"] for f in (general_facts + relevant_facts)}
+        # RestoFlow haqidagi faktlar faqat savolda RestoFlow tilga olinganda ko'rsatiladi
+        if "restoflow" not in q_low:
+            all_facts = {i: t for i, t in all_facts.items() if "restoflow" not in t.lower()}
         if all_facts:
             facts_text = "MA'LUM FAKTLAR VA BILIMLAR:\n" + "\n".join([f"- {f}" for f in all_facts.values()])
 
         # 4. Anti-Hallucination Guardrails
         guardrails = """
 ANTI-HALLUCINATION QAT'IY QOIDALARI:
-1. Sen Diego (Zulfiqor) nomidan gapirayotganingda faqat yuqorida keltirilgan FAKTLAR va STATUS ga asoslan.
+1. Sen Diego (Zulfiqor) nomidan gapirayotganingda faqat yuqorida keltirilgan FAKTLAR ga asoslan. Status va bandlik haqida faqat suhbatdosh so'raganda gapir.
 2. Agar biror masala (uchrashuv vaqti, reja, va'da, shaxsiy ma'lumot) haqida faktlarda yozilmagan bo'lsa — ASLO o'zingdan reja yoki va'da to'qima!
 3. Bilmaydigan savol berilsa, ehtiyotkor va tabiiy javob ber: "Bu haqda aniq ma'lumotim yo'q, Diego bo'shagach o'zi sizga batafsil javob beradi."
 4. "Qanday aisan?" desa — "Men Diegoning shaxsiy AI yordamchisiman 🤖. U band bo'lganida savollarga javob qaytarib turaman." deb tushuntir ("qandaysan" bilan adashtirma!).
@@ -80,15 +88,34 @@ ANTI-HALLUCINATION QAT'IY QOIDALARI:
 
 DIEGO HAQIDA:
 - Ismi: Zulfiqor (Telegram: @Diego_Davinchi, Nickname: Diego)
-- Hozirgi bandligi / statusi (FAQAT so'ralganda ayt, o'zingdan aytma): {current_status or "noma'lum"}
+- Hozirgi bandligi / statusi: {current_status or "(so'ralmagan, bu haqda GAPIRMA)"}
 
 {special_person_note}
 
 {facts_text}
 
 {guardrails}
+
+{self._load_user_rules()}
 """
         return system_prompt.strip()
+
+    @staticmethod
+    def _load_user_rules() -> str:
+        """rules/*.md (Obsidian'dan sync_rules.bat orqali ko'chirilgan) qoidalarini promptga qo'shish."""
+        rules_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rules")
+        if not os.path.isdir(rules_dir):
+            return ""
+        parts = []
+        for name in sorted(os.listdir(rules_dir)):
+            if name.endswith(".md"):
+                try:
+                    with open(os.path.join(rules_dir, name), "r", encoding="utf-8") as f:
+                        txt = f.read().split("\n---\n## 🔗")[0].strip()
+                    parts.append(txt)
+                except Exception as e:
+                    logger.warning("Qoida fayli o'qilmadi (%s): %s", name, e)
+        return ("FOYDALANUVCHI (DIEGO) QOIDALARI — ENG MUHIM, ularga qat'iy amal qil:\n" + "\n\n".join(parts)) if parts else ""
 
     def generate_response(self, chat_id: int, sender_id: int, sender_name: str, 
                           sender_username: str, user_query: str, is_me: bool = False) -> str:
